@@ -364,7 +364,7 @@ def dismiss_cookie_banner(page):
     """关闭或隐藏 Cookie 同意横幅，避免它遮挡续期弹窗里的操作按钮。"""
     try:
         banner = page.locator('#ncmp__tool')
-        if banner.count() == 0 or not banner.is_visible():
+        if banner.count() == 0:
             return False
 
         for text in ('Accept All', 'Accept', 'Allow All', 'I Agree', 'Agree', 'Got it', '接受', '同意', '全部接受'):
@@ -379,11 +379,26 @@ def dismiss_cookie_banner(page):
             except Exception:
                 continue
 
-        # 即使“接受”按钮不存在或点击失效，也隐藏遮罩层，避免 pointer-events 拦截。
+        # 外层 #ncmp__tool 可能是零尺寸容器，真正的横幅在内层，因此不能只依赖 is_visible()。
+        banner.evaluate(
+            """
+            (el) => {
+                el.style.setProperty('display', 'none', 'important');
+                el.style.setProperty('visibility', 'hidden', 'important');
+                el.style.setProperty('pointer-events', 'none', 'important');
+                el.style.setProperty('z-index', '-1', 'important');
+                el.setAttribute('aria-hidden', 'true');
+                el.querySelectorAll('*').forEach((child) => {
+                    child.style.setProperty('display', 'none', 'important');
+                    child.style.setProperty('pointer-events', 'none', 'important');
+                });
+            }
+            """
+        )
         page.evaluate(
             """
             () => {
-                const selectors = ['#ncmp__tool', '.ncmp__banner-inner', '[class*="cookie"][class*="banner"]'];
+                const selectors = ['.ncmp__banner-inner', '[class*="cookie"][class*="banner"]'];
                 for (const selector of selectors) {
                     document.querySelectorAll(selector).forEach((el) => {
                         el.style.setProperty('display', 'none', 'important');
@@ -400,7 +415,7 @@ def dismiss_cookie_banner(page):
         return False
 
 def click_element(page, locator, label, timeout=15000):
-    """点击前先处理 Cookie 横幅；若仍被遮挡，用 force click 兜底。"""
+    """点击前先处理 Cookie 横幅；若仍被遮挡，用 DOM click 绕过坐标命中检查。"""
     dismiss_cookie_banner(page)
     try:
         locator.click(timeout=timeout)
@@ -410,11 +425,18 @@ def click_element(page, locator, label, timeout=15000):
 
     dismiss_cookie_banner(page)
     try:
-        locator.click(force=True, timeout=min(timeout, 10000))
-        log(f"✅ {label} 已通过强制点击完成")
+        locator.evaluate(
+            """
+            (el) => {
+                el.scrollIntoView({ block: 'center', inline: 'center' });
+                el.click();
+            }
+            """
+        )
+        log(f"✅ {label} 已通过 DOM click 完成")
         return True
     except Exception as e:
-        log(f"❌ {label} 强制点击仍失败: {e}")
+        log(f"❌ {label} DOM click 仍失败: {e}")
         raise
 
 def open_browser(p):
@@ -612,6 +634,7 @@ def renew_service(page):
         if page.url != SERVICE_URL:
             page.goto(SERVICE_URL, wait_until="domcontentloaded", timeout=60000)
         handle_cloudflare(page)
+        dismiss_cookie_banner(page)
         time.sleep(12) # 等待续期页面完全加载,未完全加载无法点击
         log("🖱️ 准备点击 Renew 按钮...")
         renew_btn = page.locator('button:has-text("Renew")')
